@@ -5,6 +5,7 @@ import { runRealGatewayUiTests } from "../../scripts/test-ui-real-gateway.mts";
 import { createDeferred } from "../helpers/promise.js";
 
 const fixtures = vi.hoisted(() => ({ workers: 2 }));
+// mock-isolation: Keep eager environment-based config construction out of fixed coordinator project/budget fixtures.
 vi.mock("../vitest/vitest.ui-e2e-prebuilt.config.ts", () => ({
   createPrebuiltUiE2eVitestConfig: () => ({
     test: {
