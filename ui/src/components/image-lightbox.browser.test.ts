@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
-import { page, userEvent } from "vitest/browser";
+import { page, server, userEvent } from "vitest/browser";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { nextFrame } from "../test-helpers/modal-dialog.ts";
 import type { ImageLightboxItem } from "./image-lightbox.types.ts";
@@ -251,8 +251,16 @@ it("skips the pending video original link without skipping native controls", asy
   await userEvent.keyboard("{Tab}");
   expect(document.activeElement).toBe(video);
   const beforeSeek = video.currentTime;
+  let arrowPrevented: boolean | undefined;
+  video.addEventListener("keydown", (event) => (arrowPrevented = event.defaultPrevented), {
+    once: true,
+  });
   await userEvent.keyboard("{ArrowRight}");
-  await expect.poll(() => video.currentTime).toBeGreaterThan(beforeSeek);
+  expect(arrowPrevented).toBe(false);
+  // A focused WebKit video host does not seek on ArrowRight; Chromium does.
+  if (server.browser === "chromium") {
+    await expect.poll(() => video.currentTime).toBeGreaterThan(beforeSeek);
+  }
   expect(viewer.querySelector(".gallery-counter")?.textContent?.trim()).toBe("1 / 2");
   // Native player controls can expose several stops on the video host.
   for (let stop = 0; stop < 12 && document.activeElement === video; stop++) {
