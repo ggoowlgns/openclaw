@@ -4,7 +4,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createPrebuiltUiE2eVitestConfig } from "../test/vitest/vitest.ui-e2e-prebuilt.config.ts";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
-import { runManagedCommand } from "./lib/managed-child-process.mts";
+import { runManagedCommand, signalExitCode } from "./lib/managed-child-process.mts";
 import { createVitestCacheSlots, resolveVitestCacheRoot } from "./lib/vitest-cache-slots.mts";
 import { mergeVitestExitCodes } from "./lib/vitest-outcome.mts";
 
@@ -21,10 +21,9 @@ export async function runRealGatewayUiTests(
   const desktopEnv: NodeJS.ProcessEnv = { ...env, OPENCLAW_VITEST_MAX_WORKERS: "1" };
   delete desktopEnv.OPENCLAW_VITEST_INCLUDE_FILE;
   delete desktopEnv.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE;
-  const lifetime = new AbortController();
+  let receivedSignal: NodeJS.Signals | undefined;
   const withCache = createVitestCacheSlots();
   const run = async (args: string[], childEnv = env) => {
-    lifetime.signal.throwIfAborted();
     return withCache(
       {
         config: configPath,
@@ -35,16 +34,19 @@ export async function runRealGatewayUiTests(
           : { cacheAssignment: { kind: "scheduler" as const, root: resolveVitestCacheRoot(env) } }),
       },
       async ({ env: assignedEnv }) => ({
-        code: await runManagedCommand({
-          bin: process.execPath,
-          args,
-          env: assignedEnv,
-          stdio: "inherit",
-          signal: lifetime.signal,
-          onSignal: () => lifetime.abort(),
-          requireProcessTreeExit: true,
-          waitForCleanupRelease: true,
-        }),
+        code: receivedSignal
+          ? signalExitCode(receivedSignal)
+          : await runManagedCommand({
+              bin: process.execPath,
+              args,
+              env: assignedEnv,
+              stdio: "inherit",
+              onSignal: (signal) => {
+                receivedSignal ??= signal;
+              },
+              requireProcessTreeExit: true,
+              waitForCleanupRelease: true,
+            }),
         groupJoined: true,
       }),
     ).then(({ code }) => code);
@@ -66,6 +68,9 @@ export async function runRealGatewayUiTests(
     ]);
   const desktop = async () => {
     const code = await run(["--import", "tsx", "scripts/test-desktop-resize-real.mts"], desktopEnv);
+    if (code > 1) {
+      return code;
+    }
     // The desktop bootstrap reports assertion and cleanup failures with the same exit code.
     const receipt: unknown = JSON.parse(
       await readFile(
@@ -91,7 +96,7 @@ export async function runRealGatewayUiTests(
   // An explicitly owned cache leaf cannot be split between concurrent writers.
   if (workers !== 2 || env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH?.trim()) {
     const desktopCode = await desktop();
-    if (desktopCode > 1 || lifetime.signal.aborted) {
+    if (desktopCode > 1) {
       return desktopCode;
     }
     return mergeVitestExitCodes(desktopCode, await vitest());
@@ -126,7 +131,7 @@ export async function runRealGatewayUiTests(
       code = mergeVitestExitCodes(code, outcome.value);
     }
   }
-  if (code > 1 || lifetime.signal.aborted || !qualified.length) {
+  if (code > 1 || !qualified.length) {
     return code;
   }
   return mergeVitestExitCodes(code, await vitest(qualified));

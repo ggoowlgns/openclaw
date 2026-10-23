@@ -16,7 +16,10 @@ vi.mock("../vitest/vitest.ui-e2e-prebuilt.config.ts", () => ({
     },
   }),
 }));
-vi.mock("../../scripts/lib/managed-child-process.mts", () => ({ runManagedCommand: vi.fn() }));
+vi.mock("../../scripts/lib/managed-child-process.mts", async (original) => ({
+  ...(await original<typeof import("../../scripts/lib/managed-child-process.mts")>()),
+  runManagedCommand: vi.fn(),
+}));
 vi.mock("node:fs/promises", async (original) => ({
   ...(await original<typeof import("node:fs/promises")>()),
   readFile: vi.fn(),
@@ -81,18 +84,71 @@ it("spends one slot per initial branch and waits for both joins before qualified
   ).toBe(true);
 });
 
-it("does not admit qualified fixtures after interruption", async () => {
-  const exit = createDeferred<number>();
-  managed.mockReturnValue(exit.promise);
-  const running = runRealGatewayUiTests([], env);
-  expect(managed).toHaveBeenCalledTimes(2);
-  managed.mock.calls[0]?.[0].onSignal?.("SIGTERM");
-  exit.resolve(143);
-  await expect(running).resolves.toBe(143);
-  expect(managed.mock.calls.some(([call]) => project(call.args) === "ui-e2e-real-gateway")).toBe(
-    false,
-  );
-});
+// The Linux CI runner uses strict process-tree ownership, which is POSIX-only.
+it.skipIf(process.platform === "win32").each([false, true])(
+  "joins both real owners on interruption (cleanup failure=%s)",
+  async (failCleanup) => {
+    const actual = await vi.importActual<
+      typeof import("../../scripts/lib/managed-child-process.mts")
+    >("../../scripts/lib/managed-child-process.mts");
+    const initialHandlers = process.listeners("SIGTERM");
+    const cleanupError = new Error("cleanup failed");
+    const owners: Promise<number>[] = [];
+    let started = 0;
+    let joined = 0;
+    managed.mockImplementation((command) => {
+      const owner = actual
+        .runManagedCommand({
+          ...command,
+          bin: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+          stdio: "ignore",
+          timeoutMs: 5_000,
+          onReady() {
+            started++;
+            if (started === 2) {
+              // Exercise the real owner without invoking Vitest's own signal handler.
+              const handler = process
+                .listeners("SIGTERM")
+                .find((entry) => !initialHandlers.includes(entry));
+              if (!handler) {
+                throw new Error("Managed signal handler was not installed");
+              }
+              handler("SIGTERM");
+            }
+          },
+        })
+        .then((code) => {
+          if (failCleanup && project(command.args) === "ui-e2e-serial") {
+            throw cleanupError;
+          }
+          return code;
+        })
+        .finally(() => joined++);
+      owners.push(owner);
+      return owner;
+    });
+    try {
+      const running = runRealGatewayUiTests([], env);
+      if (failCleanup) {
+        const failure: unknown = await running.catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(AggregateError);
+        if (failure instanceof AggregateError) {
+          expect(failure.errors).toEqual([cleanupError]);
+        }
+      } else {
+        await expect(running).resolves.toBe(143);
+      }
+    } finally {
+      await Promise.allSettled(owners);
+    }
+    expect(started).toBe(2);
+    expect(joined).toBe(2);
+    expect(managed).toHaveBeenCalledTimes(2);
+    expect(fs.readFile).not.toHaveBeenCalled();
+    expect(process.listeners("SIGTERM")).toEqual(initialHandlers);
+  },
+);
 
 it.each(["one worker", "owned cache", "no desktop"])("preserves the %s fallback", async (mode) => {
   fixtures.workers = mode === "one worker" ? 1 : 2;
