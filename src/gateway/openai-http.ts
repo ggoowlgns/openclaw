@@ -470,6 +470,9 @@ export async function handleOpenAiHttpRequest(
     sendJson(res, 403, { error: { message: sessionAuth.message, type: "forbidden" } });
     return true;
   }
+  // Echo the resolved session key so callers can continue this conversation by
+  // sending the value back as `x-openclaw-session-key` on a later request.
+  res.setHeader("x-openclaw-session-key", sessionKey);
   const { modelOverride, errorMessage: modelError } = await resolveOpenAiCompatModelOverride({
     req,
     agentId,
