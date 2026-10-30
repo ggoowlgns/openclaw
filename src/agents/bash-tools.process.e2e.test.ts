@@ -542,7 +542,7 @@ test.skipIf(process.platform === "win32")(
     await expect
       .poll(async () => model.mock.calls.length, { timeout: 5_000, interval: 25 })
       .toBeGreaterThanOrEqual(1);
-    const firstReceipt = receipts[0];
+    const firstReceipt = expectDefined(receipts[0], "first completion receipt");
     expect(await withinTest(firstReceipt.accepted, signal)).toEqual({ ok: true });
     const second = await startBackground(
       scopeKey,
