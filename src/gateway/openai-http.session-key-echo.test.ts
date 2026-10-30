@@ -66,6 +66,15 @@ describe("OpenAI-compatible HTTP session key echo (e2e)", () => {
 
           {
             mockAgentOnce();
+            const res = await postChatCompletions(port, chatRequest({ user: "张三" }));
+            expect(res.status).toBe(200);
+            expect(res.headers.get("x-openclaw-session-key")).toBeNull();
+            expect(firstAgentCommandSessionKey()).toBe("agent:main:openai-user:张三");
+            await res.text();
+          }
+
+          {
+            mockAgentOnce();
             const res = await postChatCompletions(port, chatRequest(), {
               "x-openclaw-session-key": "agent:main:openai:custom",
             });
