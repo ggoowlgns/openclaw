@@ -43,7 +43,6 @@ import {
   runningSession,
 } from "./bash-tools.lifecycle.test-support.js";
 import { createProcessTool } from "./bash-tools.process.js";
-import type { RunEmbeddedAgentParams } from "./embedded-agent-runner/run/params.js";
 import { runEmbeddedAgent } from "./embedded-agent.js";
 import { acknowledgeInternalToolResult } from "./runtime/internal-hooks.js";
 import { isToolResultError } from "./tool-result-error.js";
@@ -76,22 +75,16 @@ beforeAll(async () => {
   openOpenClawStateDatabase();
 });
 
-async function admitEvent(params: RunEmbeddedAgentParams) {
-  await expectDefined(params.preparedRunAdmission, "real event admission").admit(
-    "gateway",
-    params.runId,
-  );
-  params.onExecutionPhase?.({ phase: "model_call_started" });
-  await params.onExecutionStarted?.();
-  await params.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
-}
-
-const silentReply = () => ({ payloads: [{ text: "NO_REPLY" }], meta: { durationMs: 1 } });
-
 beforeEach(() => {
   model.mockReset().mockImplementation(async (params) => {
-    await admitEvent(params);
-    return silentReply();
+    await expectDefined(params.preparedRunAdmission, "real event admission").admit(
+      "gateway",
+      params.runId,
+    );
+    params.onExecutionPhase?.({ phase: "model_call_started" });
+    await params.onExecutionStarted?.();
+    await params.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
+    return { payloads: [{ text: "NO_REPLY" }], meta: { durationMs: 1 } };
   });
   observe = vi
     .spyOn(sessionEvents, "enqueueSessionEventForHost")
@@ -526,12 +519,13 @@ test.skipIf(process.platform === "win32")(
     // The first completion wake stays admitted while its model call is held, like an
     // ordinary user turn that is still running when a background process exits.
     const releaseFirstTurn = createDeferredCore();
+    const currentModel = expectDefined(model.getMockImplementation(), "current model fixture");
     model.mockImplementation(async (params) => {
-      await admitEvent(params);
+      const reply = await currentModel(params);
       if (model.mock.calls.length === 1) {
         await withinTest(releaseFirstTurn.promise, signal);
       }
-      return silentReply();
+      return reply;
     });
     const first = await startBackground(
       scopeKey,
